@@ -78,26 +78,33 @@ echo ""
 
 # Test 3: Queue another task with different content
 print_step "file_out Task"
+
+# Encode the content to base64 for file_out task
+CONTENT_TO_ENCODE='print('\''Hello Trevor!'\'')'
+ENCODED_CONTENT=$(echo -n "$CONTENT_TO_ENCODE" | base64)
+print_success "Original content: $CONTENT_TO_ENCODE"
+print_success "Base64 encoded: $ENCODED_CONTENT"
+
 task2_response=$(curl -s -w "\n%{http_code}" \
     -X POST \
     -H "Authorization: Bearer $AUTH_TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{
-        "program": "file_out",
-        "parameters": ["test.lua", "print('Hello Trevor!')"],
-        "expectedDuration": 5,
-        "priority": 0
-    }' \
+    -d "{
+        \"program\": \"file_out\",
+        \"parameters\": [\"test.lua\", \"$ENCODED_CONTENT\"],
+        \"expectedDuration\": 5,
+        \"priority\": 0
+    }" \
     "$SERVER_URL/computer/$COMPUTER_ID/queue")
 
 http_code=$(echo "$task2_response" | tail -n1)
 body=$(echo "$task2_response" | sed '$d')
 
 if [ "$http_code" = "200" ]; then
-    print_success "First task queued successfully"
+    print_success "file_out task queued successfully"
     echo "$body" | jq '.'
 else
-    print_error "Failed to queue first task (HTTP $http_code)"
+    print_error "Failed to queue file_out task (HTTP $http_code)"
     echo "$body"
 fi
 

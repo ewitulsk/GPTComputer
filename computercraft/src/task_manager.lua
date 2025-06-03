@@ -14,8 +14,44 @@ local receivedTasks = {}  -- Local queue of received tasks
 
 -- Simple JSON encoder/decoder (reused from other scripts)
 local json = {}
+local _json_encode_custom -- forward declare
+local _json_decode_custom -- forward declare
 
-function json.encode(obj)
+if textutils and textutils.serialiseJSON then
+    json.encode = function(obj)
+        local success, result = pcall(textutils.serialiseJSON, obj)
+        if success then
+            return result
+        else
+            print("Warning: textutils.serialiseJSON failed: " .. tostring(result) .. ". Falling back to custom encoder.")
+            return _json_encode_custom(obj) 
+        end
+    end
+else
+    print("Warning: textutils.serialiseJSON not found. Using custom JSON encoder.")
+    json.encode = function(obj) return _json_encode_custom(obj) end
+end
+
+if textutils and textutils.unserialiseJSON then
+    json.decode = function(str)
+        local success, result = pcall(textutils.unserialiseJSON, str)
+        if success then
+            return result
+        else
+            -- For unJSON, if it's already nil or a non-string, pcall might return false.
+            -- Only print warning if str was actually a string and failed.
+            if type(str) == "string" and str ~= "" then
+                print("Warning: textutils.unserialiseJSON failed for string: \'" .. str .. "\': " .. tostring(result) .. ". Falling back to custom decoder.")
+            end
+            return _json_decode_custom(str)
+        end
+    end
+else
+    print("Warning: textutils.unserialiseJSON not found. Using custom JSON decoder.")
+    json.decode = function(str) return _json_decode_custom(str) end
+end
+
+_json_encode_custom = function(obj)
     if type(obj) == "table" then
         local result = "{"
         local first = true
@@ -39,7 +75,7 @@ function json.encode(obj)
     end
 end
 
-function json.decode(str)
+_json_decode_custom = function(str)
     -- Simple JSON decoder - handles basic cases
     if str == "null" then return nil end
     if str == "true" then return true end
@@ -95,13 +131,6 @@ local function makeRequest(method, endpoint, body)
     
     local requestBody = body and json.encode(body) or nil
     
-    print("DEBUG: makeRequest - Method: " .. method .. ", URL: " .. url)
-    if requestBody then
-        print("DEBUG: makeRequest - Body: " .. requestBody)
-    else
-        print("DEBUG: makeRequest - Body: nil")
-    end
-
     local response
     if method == "GET" then
         response = http.get(url, headers)
@@ -274,8 +303,15 @@ local function syncQueueState()
         activeCount = activeCount + 1 -- Increment counter
     end
     
-    print("DEBUG: syncQueueState - Sending EMPTY test body to /tasks/received") -- Added for clarity
-    local response = makeRequest("POST", "/computer/" .. computerId .. "/tasks/received", {}) -- Changed body to {}
+    local response = makeRequest("POST", "/computer/" .. computerId .. "/tasks/received", {
+        queuedTasks = queuedTasks,
+        activeTasks = activeTasksReport,
+        localQueueState = {
+            queueLength = table.getn(receivedTasks),
+            activeCount = activeCount, -- Use corrected activeCount
+            lastSyncTime = currentTime
+        }
+    })
     
     if response and response.success then
         -- Only print sync success occasionally to reduce spam
