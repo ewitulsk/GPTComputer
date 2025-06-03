@@ -1,5 +1,6 @@
--- File Output Task for ComputerCraft Task Manager
+-- Fast File Output Task for ComputerCraft Task Manager
 -- Takes a filename and content string, writes content to the file
+-- Optimized version with minimal verification
 -- Compatible with CC: Tweaked
 
 -- Get command line arguments
@@ -7,9 +8,9 @@ local args = {...}
 
 -- Validate arguments
 if #args < 2 then
-    print("ERROR: file_out requires exactly 2 arguments")
-    print("Usage: file_out <filename> <content>")
-    print("Example: file_out test.txt \"Hello World\"")
+    print("ERROR: file_out_fast requires exactly 2 arguments")
+    print("Usage: file_out_fast <filename> <content>")
+    print("Example: file_out_fast test.txt \"Hello World\"")
     return false
 end
 
@@ -34,10 +35,9 @@ if content == nil then
     content = ""
 end
 
-print("Writing to file: " .. filename)
-print("Content length: " .. #content .. " characters")
+print("Writing " .. #content .. " chars to: " .. filename)
 
--- Try to write the file
+-- Write the file with minimal verification
 local success, errorMsg = pcall(function()
     local file = fs.open(filename, "w")
     if not file then
@@ -49,40 +49,7 @@ local success, errorMsg = pcall(function()
 end)
 
 if success then
-    print("SUCCESS: File written successfully")
-    print("File: " .. filename)
-    print("Size: " .. (#content) .. " bytes")
-    
-    -- Verify the file was written correctly
-    if fs.exists(filename) then
-        local size = fs.getSize(filename)
-        print("Verified file exists with size: " .. size .. " bytes")
-        
-        -- Read back a preview of the content
-        local readFile = fs.open(filename, "r")
-        if readFile then
-            local readContent = readFile.readAll()
-            readFile.close()
-            
-            if readContent == content then
-                print("Content verification: PASSED")
-            else
-                print("WARNING: Content verification failed")
-                print("Expected length: " .. #content)
-                print("Actual length: " .. #readContent)
-            end
-            
-            -- Show preview of content (first 100 chars)
-            local preview = readContent:sub(1, 100)
-            if #readContent > 100 then
-                preview = preview .. "..."
-            end
-            print("Content preview: " .. preview)
-        end
-    else
-        print("WARNING: File verification failed - file does not exist after write")
-    end
-    
+    print("SUCCESS: File written (" .. #content .. " bytes)")
     return true
 else
     print("ERROR: Failed to write file")

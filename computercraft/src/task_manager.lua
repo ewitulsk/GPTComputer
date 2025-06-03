@@ -10,7 +10,6 @@ local authToken = ""
 local computerId = ""
 local isRunning = false
 local activeTasks = {}
-local taskThreads = {}
 local receivedTasks = {}  -- Local queue of received tasks
 local lastSyncTime = 0
 
@@ -240,8 +239,8 @@ end
 local function syncQueueState()
     local currentTime = os.time()
     
-    -- Only sync every 30 seconds to avoid spam
-    if currentTime - lastSyncTime < 30 then
+    -- Only sync every 60 seconds to reduce HTTP overhead
+    if currentTime - lastSyncTime < 60 then
         return
     end
     
@@ -258,9 +257,9 @@ local function syncQueueState()
         })
     end
     
-    local activeTasks = {}
+    local activeTasksReport = {}
     for taskId, task in pairs(activeTasks) do
-        table.insert(activeTasks, {
+        table.insert(activeTasksReport, {
             id = taskId,
             program = task.program,
             status = "in-progress",
@@ -270,7 +269,7 @@ local function syncQueueState()
     
     local response = makeRequest("POST", "/computer/" .. computerId .. "/tasks/received", {
         queuedTasks = queuedTasks,
-        activeTasks = activeTasks,
+        activeTasks = activeTasksReport,
         localQueueState = {
             queueLength = table.getn(receivedTasks),
             activeCount = table.getn(activeTasks),
@@ -291,112 +290,147 @@ local function syncQueueState()
     end
 end
 
--- Report task start
+-- Report task start (non-blocking)
 local function reportTaskStart(taskId)
-    local response = makeRequest("POST", "/computer/" .. computerId .. "/start/" .. taskId, {})
-    return response and response.success
+    local success, response = pcall(function()
+        return makeRequest("POST", "/computer/" .. computerId .. "/start/" .. taskId, {})
+    end)
+    return success and response and response.success
 end
 
--- Report task completion
+-- Report task completion (non-blocking)
 local function reportTaskFinish(taskId, output)
-    local response = makeRequest("POST", "/computer/" .. computerId .. "/finish/" .. taskId, {
-        output = output or ""
-    })
-    return response and response.success
+    local success, response = pcall(function()
+        return makeRequest("POST", "/computer/" .. computerId .. "/finish/" .. taskId, {
+            output = output or ""
+        })
+    end)
+    return success and response and response.success
 end
 
--- Report task failure
+-- Report task failure (non-blocking)
 local function reportTaskFailure(taskId, error, details)
-    local response = makeRequest("POST", "/computer/" .. computerId .. "/failure/" .. taskId, {
-        error = error or "Unknown error",
-        details = details or "",
-        timestamp = os.time()
-    })
-    return response and response.success
+    local success, response = pcall(function()
+        return makeRequest("POST", "/computer/" .. computerId .. "/failure/" .. taskId, {
+            error = error or "Unknown error",
+            details = details or "",
+            timestamp = os.time()
+        })
+    end)
+    return success and response and response.success
 end
 
 -- Execute a task program
 local function executeTask(taskId, programName, parameters)
     print("Executing task " .. taskId .. ": " .. programName)
     
-    -- Check if program exists
-    if not fs.exists(programName) and not fs.exists(programName .. ".lua") then
+    -- Validate inputs
+    if not taskId or not programName then
+        local error = "Invalid task parameters: taskId=" .. tostring(taskId) .. ", program=" .. tostring(programName)
+        print("ERROR: " .. error)
+        reportTaskFailure(taskId or "unknown", "Invalid task parameters", error)
+        return false
+    end
+    
+    -- Check if program exists in various locations
+    local possiblePaths = {
+        programName,
+        programName .. ".lua",
+        "tasks/" .. programName,
+        "tasks/" .. programName .. ".lua",
+        "/tasks/" .. programName,
+        "/tasks/" .. programName .. ".lua",
+        "src/" .. programName,
+        "src/" .. programName .. ".lua"
+    }
+    
+    local foundPath = nil
+    for _, path in ipairs(possiblePaths) do
+        if fs.exists(path) then
+            foundPath = path
+            break
+        end
+    end
+    
+    if not foundPath then
         local error = "Program not found: " .. programName
         print("ERROR: " .. error)
+        print("Searched locations:")
+        for _, path in ipairs(possiblePaths) do
+            print("  " .. path)
+        end
         reportTaskFailure(taskId, error, "Program file does not exist on this computer")
         return false
     end
     
+    print("Found program at: " .. foundPath)
+    
     -- Report task start
-    if not reportTaskStart(taskId) then
-        print("Failed to report task start for " .. taskId)
+    local reportSuccess, reportError = pcall(reportTaskStart, taskId)
+    if not reportSuccess then
+        print("Failed to report task start for " .. taskId .. ": " .. tostring(reportError))
+        -- Continue anyway - this is not a fatal error
     end
     
-    -- Build command line arguments
-    local args = parameters or {}
+    -- Build command line arguments safely
     local cmdArgs = {}
-    if type(args) == "table" then
-        for i, arg in ipairs(args) do
-            table.insert(cmdArgs, tostring(arg))
+    if parameters then
+        if type(parameters) == "table" then
+            for i, arg in ipairs(parameters) do
+                table.insert(cmdArgs, tostring(arg))
+            end
+        else
+            table.insert(cmdArgs, tostring(parameters))
         end
     end
     
     -- Execute the program using shell.run in a protected call
-    local success, result = pcall(function()
-        -- Create a temporary output capture
-        local originalPrint = print
-        local output = {}
-        
-        -- Override print to capture output
-        print = function(...)
-            local args = {...}
-            local line = ""
-            for i, arg in ipairs(args) do
-                if i > 1 then line = line .. " " end
-                line = line .. tostring(arg)
-            end
-            table.insert(output, line)
-            originalPrint(line)
-        end
-        
-        -- Run the program
-        local programSuccess = shell.run(programName, unpack(cmdArgs))
-        
-        -- Restore original print
-        print = originalPrint
-        
-        -- Join output
-        local outputStr = table.concat(output, "\n")
-        
-        return programSuccess, outputStr
+    local executeSuccess, executeResult = pcall(function()
+        -- Run the program directly without output capture for better performance
+        local programSuccess = shell.run(foundPath, unpack(cmdArgs))
+        return programSuccess
     end)
     
-    if success and result then
-        local programSuccess, output = result, ""
-        if type(result) == "table" then
-            programSuccess = result[1]
-            output = result[2] or ""
-        end
-        
-        if programSuccess then
+    -- Handle execution results
+    if executeSuccess then
+        if executeResult then
             print("Task " .. taskId .. " completed successfully")
-            reportTaskFinish(taskId, output)
+            
+            -- Report success (with error handling)
+            local reportSuccess, reportError = pcall(reportTaskFinish, taskId, "Task completed successfully")
+            if not reportSuccess then
+                print("Failed to report task completion: " .. tostring(reportError))
+            end
+            
             return true
         else
-            print("Task " .. taskId .. " failed during execution")
-            reportTaskFailure(taskId, "Program execution failed", output)
+            print("Task " .. taskId .. " failed - program returned false")
+            
+            -- Report failure (with error handling)
+            local reportSuccess, reportError = pcall(reportTaskFailure, taskId, "Program execution failed", "Program returned false or failed")
+            if not reportSuccess then
+                print("Failed to report task failure: " .. tostring(reportError))
+            end
+            
             return false
         end
     else
-        local error = "Failed to execute program: " .. tostring(result)
+        local error = "Failed to execute program: " .. tostring(executeResult)
         print("ERROR: " .. error)
-        reportTaskFailure(taskId, error, "Exception during program execution")
+        
+        -- Report failure (with error handling)
+        local reportSuccess, reportError = pcall(reportTaskFailure, taskId, error, "Exception during program execution")
+        if not reportSuccess then
+            print("Failed to report task failure: " .. tostring(reportError))
+        end
+        
         return false
     end
 end
 
--- Task execution thread
-local function taskThread(taskId, programName, parameters)
+-- Task execution function
+local function executeTaskSafely(taskId, programName, parameters)
+    -- Add to active tasks
     activeTasks[taskId] = {
         id = taskId,
         program = programName,
@@ -404,36 +438,73 @@ local function taskThread(taskId, programName, parameters)
         startTime = os.time()
     }
     
-    local success = executeTask(taskId, programName, parameters)
+    local success = false
     
+    -- Wrap task execution in additional error handling
+    local taskSuccess, taskResult = pcall(function()
+        return executeTask(taskId, programName, parameters)
+    end)
+    
+    if taskSuccess then
+        success = taskResult -- taskResult is the actual return value when pcall succeeds
+    else
+        -- Handle unexpected errors during task execution
+        print("CRITICAL ERROR in task " .. taskId .. ": " .. tostring(taskResult))
+        
+        -- Try to report failure (with error handling)
+        local reportSuccess, reportError = pcall(reportTaskFailure, taskId, "Critical execution error", tostring(taskResult))
+        if not reportSuccess then
+            print("Failed to report critical error: " .. tostring(reportError))
+        end
+        
+        success = false
+    end
+    
+    -- Clean up task tracking
     activeTasks[taskId] = nil
+    
+    print("Task " .. taskId .. " finished with success: " .. tostring(success))
     return success
 end
 
--- Process a task from the local received queue
-local function processReceivedTask(task)
-    if not task or not task.id or not task.program then
-        print("Invalid task to process")
-        return
+-- Background task manager that processes tasks from the queue
+local function taskManager()
+    while isRunning do
+        -- Check if we can start a new task
+        local maxConcurrentTasks = 2
+        local activeTaskCount = 0
+        for _ in pairs(activeTasks) do
+            activeTaskCount = activeTaskCount + 1
+        end
+        
+        if activeTaskCount < maxConcurrentTasks then
+            local nextTask = getNextReceivedTask()
+            if nextTask then
+                local taskId = tostring(nextTask.id)
+                local programName = nextTask.program
+                local parameters = nextTask.parameters or {}
+                
+                print("Task manager starting: " .. taskId .. " (" .. programName .. ")")
+                
+                -- Execute task safely
+                local success, result = pcall(executeTaskSafely, taskId, programName, parameters)
+                if not success then
+                    print("ERROR: Failed to execute task " .. taskId .. ": " .. tostring(result))
+                    -- Clean up
+                    if activeTasks[taskId] then
+                        activeTasks[taskId] = nil
+                    end
+                    -- Report the error
+                    pcall(reportTaskFailure, taskId, "Task manager error", tostring(result))
+                end
+            end
+        end
+        
+        -- Small delay to prevent excessive CPU usage
+        sleep(1)
     end
     
-    local taskId = tostring(task.id)
-    local programName = task.program
-    local parameters = task.parameters or {}
-    
-    print("Processing received task: " .. taskId .. " (" .. programName .. ")")
-    
-    -- Start task in parallel thread
-    local thread = function()
-        taskThread(taskId, programName, parameters)
-    end
-    
-    taskThreads[taskId] = thread
-    
-    -- Execute in parallel
-    parallel.waitForAny(thread)
-    
-    taskThreads[taskId] = nil
+    print("Task manager thread stopped")
 end
 
 -- Process new tasks from server poll
@@ -457,48 +528,48 @@ local function processServerPoll(serverResponse)
     end
 end
 
--- Main polling loop
-local function mainLoop()
-    print("\n=== Task Manager Active ===")
-    print("Computer ID: " .. computerId)
-    print("Polling for tasks and managing local queue...")
-    print("Press Ctrl+T to stop")
-    print("=" .. string.rep("=", 30))
-    
-    isRunning = true
+-- Server polling loop
+local function pollingLoop()
+    print("Starting server polling loop...")
+    local lastPollTime = 0
     
     while isRunning do
-        -- Poll server for new tasks
-        local serverResponse = pollForTasks()
-        if serverResponse then
-            processServerPoll(serverResponse)
-        end
+        local currentTime = os.time()
         
-        -- Start a task from local queue if we have room and tasks available
-        local maxConcurrentTasks = 2 -- Limit concurrent tasks
-        if table.getn(activeTasks) < maxConcurrentTasks then
-            local nextTask = getNextReceivedTask()
-            if nextTask then
-                print("Starting task from queue: " .. nextTask.id .. " (" .. nextTask.program .. ")")
-                
-                -- Process the task asynchronously
-                local thread = function()
-                    processReceivedTask(nextTask)
+        -- Poll server for new tasks every 5 seconds
+        if currentTime - lastPollTime >= 5 then
+            local success, serverResponse = pcall(pollForTasks)
+            if success and serverResponse then
+                local processSuccess, processError = pcall(processServerPoll, serverResponse)
+                if not processSuccess then
+                    print("ERROR: Failed to process server response: " .. tostring(processError))
                 end
-                
-                -- Start in background using parallel
-                parallel.waitForAny(thread, function()
-                    -- This function will keep the loop responsive
-                    sleep(0.1)
-                end)
+            elseif not success then
+                print("ERROR: Failed to poll server: " .. tostring(serverResponse))
             end
+            lastPollTime = currentTime
         end
         
-        -- Sync queue state with server periodically
-        syncQueueState()
+        -- Sync queue state with server periodically (every 60 seconds)
+        local success, error = pcall(syncQueueState)
+        if not success then
+            print("ERROR: Failed to sync queue state: " .. tostring(error))
+        end
         
-        -- Check for terminate event with timeout
-        local timer = os.startTimer(3) -- Check every 3 seconds
+        -- Small delay to prevent excessive CPU usage
+        sleep(2)
+    end
+    
+    print("Polling loop stopped")
+end
+
+-- Main control loop
+local function controlLoop()
+    print("Starting control loop...")
+    
+    while isRunning do
+        -- Check for terminate event
+        local timer = os.startTimer(5) -- Check every 5 seconds
         local event, timerID = os.pullEvent()
         
         if event == "terminate" then
@@ -506,17 +577,50 @@ local function mainLoop()
             isRunning = false
             break
         elseif event == "timer" and timerID == timer then
-            -- Continue main loop
+            -- Continue control loop
         end
     end
     
-    -- Wait for active tasks to complete
+    print("Control loop stopped")
+end
+
+-- Main function that runs all components in parallel
+local function mainLoop()
+    print("\n=== Task Manager Active ===")
+    print("Computer ID: " .. computerId)
+    print("Starting parallel polling and task management...")
+    print("Press Ctrl+T to stop")
+    print("=" .. string.rep("=", 30))
+    
+    isRunning = true
+    
+    -- Run polling, task management, and control in parallel
+    parallel.waitForAny(
+        pollingLoop,    -- Polls server for new tasks
+        taskManager,    -- Processes tasks from local queue
+        controlLoop     -- Handles shutdown signals
+    )
+    
+    -- Gracefully shut down active tasks
     if table.getn(activeTasks) > 0 then
-        print("Waiting for active tasks to complete...")
-        while table.getn(activeTasks) > 0 do
+        print("Waiting for active tasks to complete (max 30 seconds)...")
+        local shutdownStart = os.time()
+        while table.getn(activeTasks) > 0 and (os.time() - shutdownStart) < 30 do
             sleep(1)
         end
+        
+        -- Force cleanup remaining tasks
+        for taskId, task in pairs(activeTasks) do
+            print("Force stopping task: " .. taskId)
+            local reportSuccess, reportError = pcall(reportTaskFailure, taskId, "Task manager shutdown", "System shutdown interrupted task")
+            if not reportSuccess then
+                print("Failed to report shutdown: " .. tostring(reportError))
+            end
+            activeTasks[taskId] = nil
+        end
     end
+    
+    print("Task Manager shutdown complete.")
 end
 
 -- Display status

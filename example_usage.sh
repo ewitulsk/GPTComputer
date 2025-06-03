@@ -76,16 +76,43 @@ fi
 
 echo ""
 
-# Test 2: Queue a simple file_out task
-print_step "Queuing file_out Task"
-task_response=$(curl -s -w "\n%{http_code}" \
+# Test 3: Queue another task with different content
+print_step "file_out Task"
+task2_response=$(curl -s -w "\n%{http_code}" \
     -X POST \
     -H "Authorization: Bearer $AUTH_TOKEN" \
     -H "Content-Type: application/json" \
     -d '{
         "program": "file_out",
-        "parameters": ["test_output.txt", "Hello from the task management system!"],
-        "expectedDuration": 30,
+        "parameters": ["test.lua", "print('Hello Trevor!')"],
+        "expectedDuration": 5,
+        "priority": 0
+    }' \
+    "$SERVER_URL/computer/$COMPUTER_ID/queue")
+
+http_code=$(echo "$task2_response" | tail -n1)
+body=$(echo "$task2_response" | sed '$d')
+
+if [ "$http_code" = "200" ]; then
+    print_success "First task queued successfully"
+    echo "$body" | jq '.'
+else
+    print_error "Failed to queue first task (HTTP $http_code)"
+    echo "$body"
+fi
+
+echo ""
+
+# Test 2: Queue a simple file_out task
+print_step "Hello Trevor Task"
+task_response=$(curl -s -w "\n%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "program": "test",
+        "parameters": [],
+        "expectedDuration": 10,
         "priority": 1
     }' \
     "$SERVER_URL/computer/$COMPUTER_ID/queue")
@@ -101,33 +128,6 @@ else
     print_error "Failed to queue task (HTTP $http_code)"
     echo "$body"
     exit 1
-fi
-
-echo ""
-
-# Test 3: Queue another task with different content
-print_step "Queuing Another file_out Task"
-task2_response=$(curl -s -w "\n%{http_code}" \
-    -X POST \
-    -H "Authorization: Bearer $AUTH_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "program": "file_out",
-        "parameters": ["status_report.txt", "Task management system is working correctly!"],
-        "expectedDuration": 20,
-        "priority": 0
-    }' \
-    "$SERVER_URL/computer/$COMPUTER_ID/queue")
-
-http_code=$(echo "$task2_response" | tail -n1)
-body=$(echo "$task2_response" | sed '$d')
-
-if [ "$http_code" = "200" ]; then
-    print_success "Second task queued successfully"
-    echo "$body" | jq '.'
-else
-    print_error "Failed to queue second task (HTTP $http_code)"
-    echo "$body"
 fi
 
 echo ""

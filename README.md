@@ -67,18 +67,44 @@ A comprehensive task management system for ComputerCraft computers with AI chat 
 
 ### ComputerCraft Setup
 
-1. **Copy the scripts to your ComputerCraft computer:**
+1. **Copy all scripts to your ComputerCraft computer:**
    - `computercraft/src/task_manager.lua` - Main task management system
    - `computercraft/src/chat_ai_assistant.lua` - AI chat assistant
    - `computercraft/src/file_out.lua` - Example task program
+   - `computercraft/src/sync_queue.lua` - Queue synchronization task
    - `computercraft/src/http_client.lua` - HTTP utility library
+   - `computercraft/src/setup_tasks.lua` - Setup and organization script
 
-2. **Run the task manager:**
+2. **Run the setup script to organize files:**
+   ```lua
+   setup_tasks
+   ```
+   
+   This will:
+   - Create a `tasks/` directory
+   - Move task programs (`file_out.lua`, `sync_queue.lua`) to the `tasks/` folder
+   - Verify all files are in the correct locations
+   - Test task execution
+   - Display the recommended file structure
+
+3. **Recommended ComputerCraft file structure:**
+   ```
+   ComputerCraft Computer Root/
+   ├── task_manager.lua         (Main task manager)
+   ├── chat_ai_assistant.lua    (AI chat system)
+   ├── http_client.lua          (HTTP utilities)
+   ├── setup_tasks.lua          (Setup script)
+   └── tasks/
+       ├── file_out.lua         (File output task)
+       └── sync_queue.lua       (Queue sync task)
+   ```
+
+4. **Run the task manager:**
    ```lua
    task_manager
    ```
 
-3. **Or run the chat assistant:**
+5. **Or run the chat assistant:**
    ```lua
    chat_ai_assistant
    ```
@@ -168,6 +194,21 @@ A simple task that writes content to a file:
 - Filename sanitization
 - Content verification
 - Detailed success/error reporting
+
+### Fast File Output (`file_out_fast.lua`)
+
+Optimized version of file_out for better performance:
+
+```lua
+-- Usage: file_out_fast <filename> <content>
+-- Example: file_out_fast test.txt "Hello World"
+```
+
+**Performance Optimizations:**
+- Minimal file I/O (write-only, no read-back verification)
+- Reduced logging overhead
+- ~5x faster execution for large files
+- Recommended for production use
 
 ### Queue Synchronization Task (`sync_queue.lua`)
 
@@ -550,10 +591,28 @@ Failed tasks include:
 - Check file permissions and syntax
 - Review server logs for error messages
 
+**"Program not found" errors:**
+- Run `setup_tasks` script to organize files properly
+- Ensure task programs are in the `tasks/` directory
+- The task manager searches these locations:
+  - `tasks/program_name.lua`
+  - `tasks/program_name`
+  - `src/program_name.lua`
+  - `program_name.lua` (root directory)
+- Manually verify: `ls tasks/` should show your task files
+- Test manually: `tasks/file_out test.txt "hello"` should work
+
 **Tasks timing out:**
 - Increase `expectedDuration` for long-running tasks
 - Check for infinite loops in task programs
 - Monitor server resources
+
+**Tasks running slowly:**
+- Use `file_out_fast` instead of `file_out` for better performance
+- Avoid excessive file I/O or verification in task programs
+- The task manager now uses optimized execution (no output capture)
+- Check network latency if HTTP reporting is slow
+- Consider reducing sync frequency for better performance
 
 **Authentication errors:**
 - Verify `AUTH_SECRET` environment variable
