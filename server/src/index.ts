@@ -14,6 +14,32 @@ const anthropic = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
+// Store conversation history per user
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+interface UserSession {
+  messages: Message[];
+  lastActivity: Date;
+}
+
+const userSessions = new Map<string, UserSession>();
+
+// Clean up old sessions (older than 24 hours)
+const cleanupOldSessions = (): void => {
+  const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
+  for (const [userId, session] of userSessions.entries()) {
+    if (session.lastActivity < cutoffTime) {
+      userSessions.delete(userId);
+    }
+  }
+};
+
+// Run cleanup every hour
+setInterval(cleanupOldSessions, 60 * 60 * 1000);
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -42,13 +68,69 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Get conversation history for a user
+app.get('/chat/:user/history', authenticate, (req, res): void => {
+  const { user } = req.params;
+  
+  if (!user) {
+    res.status(400).json({ error: 'User is required' });
+    return;
+  }
+  
+  const session = userSessions.get(user);
+  if (!session) {
+    res.json({ 
+      user,
+      messages: [],
+      conversationLength: 0
+    });
+    return;
+  }
+  
+  res.json({
+    user,
+    messages: session.messages,
+    conversationLength: session.messages.length,
+    lastActivity: session.lastActivity
+  });
+});
+
+// Clear conversation history for a user
+app.delete('/chat/:user/history', authenticate, (req, res): void => {
+  const { user } = req.params;
+  
+  if (!user) {
+    res.status(400).json({ error: 'User is required' });
+    return;
+  }
+  
+  const hadSession = userSessions.has(user);
+  userSessions.delete(user);
+  
+  res.json({
+    user,
+    cleared: hadSession,
+    message: hadSession ? 'Conversation history cleared' : 'No conversation history found'
+  });
+});
+
 // Chat endpoint
 app.post('/chat', authenticate, async (req, res): Promise<void> => {
   try {
-    const { message, model = 'claude-3-sonnet-20240229', max_tokens = 1000 } = req.body;
+    const { user, message, model = 'claude-sonnet-4-20250514', max_tokens = 1000 } = req.body;
+    
+    if (!user) {
+      res.status(400).json({ error: 'User is required' });
+      return;
+    }
     
     if (!message) {
       res.status(400).json({ error: 'Message is required' });
+      return;
+    }
+    
+    if (typeof user !== 'string') {
+      res.status(400).json({ error: 'User must be a string' });
       return;
     }
     
@@ -57,16 +139,33 @@ app.post('/chat', authenticate, async (req, res): Promise<void> => {
       return;
     }
     
-    // Call Claude API
+    // Get or create user session
+    let session = userSessions.get(user);
+    if (!session) {
+      session = {
+        messages: [],
+        lastActivity: new Date()
+      };
+      userSessions.set(user, session);
+    }
+    
+    // Add user's message to conversation history
+    session.messages.push({
+      role: 'user',
+      content: message
+    });
+    
+    // Update last activity
+    session.lastActivity = new Date();
+    
+    // Call Claude API with conversation history
     const response = await anthropic.messages.create({
       model,
       max_tokens,
-      messages: [
-        {
-          role: 'user',
-          content: message
-        }
-      ]
+      messages: session.messages.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }))
     });
     
     // Extract the text content from Claude's response
@@ -75,10 +174,17 @@ app.post('/chat', authenticate, async (req, res): Promise<void> => {
       .map((block: any) => block.text)
       .join('');
     
+    // Add Claude's response to conversation history
+    session.messages.push({
+      role: 'assistant',
+      content: responseText
+    });
+    
     res.json({
       response: responseText,
       model: response.model,
-      usage: response.usage
+      usage: response.usage,
+      conversationLength: session.messages.length
     });
     
   } catch (error: unknown) {
@@ -108,6 +214,8 @@ app.listen(PORT, () => {
   console.log(`Claude API wrapper server running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Chat endpoint: POST http://localhost:${PORT}/chat`);
+  console.log(`Get history: GET http://localhost:${PORT}/chat/:user/history`);
+  console.log(`Clear history: DELETE http://localhost:${PORT}/chat/:user/history`);
   
   // Validate required environment variables
   if (!process.env.CLAUDE_API_KEY) {
