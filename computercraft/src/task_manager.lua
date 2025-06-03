@@ -11,7 +11,6 @@ local computerId = ""
 local isRunning = false
 local activeTasks = {}
 local receivedTasks = {}  -- Local queue of received tasks
-local lastSyncTime = 0
 
 -- Simple JSON encoder/decoder (reused from other scripts)
 local json = {}
@@ -96,6 +95,13 @@ local function makeRequest(method, endpoint, body)
     
     local requestBody = body and json.encode(body) or nil
     
+    print("DEBUG: makeRequest - Method: " .. method .. ", URL: " .. url)
+    if requestBody then
+        print("DEBUG: makeRequest - Body: " .. requestBody)
+    else
+        print("DEBUG: makeRequest - Body: nil")
+    end
+
     local response
     if method == "GET" then
         response = http.get(url, headers)
@@ -207,7 +213,7 @@ local function addToReceivedQueue(task)
         parameters = task.parameters,
         priority = task.priority or 0,
         expectedDuration = task.expectedDuration,
-        receivedAt = os.time(),
+        receivedAt = os.clock(),
         status = "received"
     })
     
@@ -237,14 +243,13 @@ end
 
 -- Sync local queue state with server
 local function syncQueueState()
-    local currentTime = os.time()
-    
-    -- Only sync every 60 seconds to reduce HTTP overhead
-    if currentTime - lastSyncTime < 60 then
-        return
+    -- Check if computer ID is set
+    if not computerId or computerId == "" then
+        print("ERROR: Cannot sync - computer not registered")
+        return false
     end
     
-    lastSyncTime = currentTime
+    local currentTime = os.clock()
     
     -- Prepare queue state report
     local queuedTasks = {}
@@ -258,6 +263,7 @@ local function syncQueueState()
     end
     
     local activeTasksReport = {}
+    local activeCount = 0 -- Initialize counter
     for taskId, task in pairs(activeTasks) do
         table.insert(activeTasksReport, {
             id = taskId,
@@ -265,28 +271,36 @@ local function syncQueueState()
             status = "in-progress",
             startTime = task.startTime
         })
+        activeCount = activeCount + 1 -- Increment counter
     end
     
-    local response = makeRequest("POST", "/computer/" .. computerId .. "/tasks/received", {
-        queuedTasks = queuedTasks,
-        activeTasks = activeTasksReport,
-        localQueueState = {
-            queueLength = table.getn(receivedTasks),
-            activeCount = table.getn(activeTasks),
-            lastSyncTime = currentTime
-        }
-    })
+    print("DEBUG: syncQueueState - Sending EMPTY test body to /tasks/received") -- Added for clarity
+    local response = makeRequest("POST", "/computer/" .. computerId .. "/tasks/received", {}) -- Changed body to {}
     
     if response and response.success then
-        print("Queue state synced with server")
+        -- Only print sync success occasionally to reduce spam
+        if table.getn(receivedTasks) > 0 or table.getn(activeTasks) > 0 then
+            print("Queue state synced with server")
+        end
         if response.data and response.data.syncStatus == "out-of-sync" then
             print("WARNING: Queue out of sync with server")
             if response.data.recommendations and response.data.recommendations.shouldRefreshQueue then
                 print("Server recommends refreshing queue")
             end
         end
+        return true
     else
-        print("Failed to sync queue state with server")
+        local errorMsg = "Failed to sync queue state"
+        if response then
+            errorMsg = errorMsg .. " (HTTP " .. tostring(response.status) .. ")"
+            if response.data then
+                errorMsg = errorMsg .. ": " .. tostring(response.data)
+            end
+        else
+            errorMsg = errorMsg .. " (No response)"
+        end
+        print("ERROR: " .. errorMsg)
+        return false
     end
 end
 
@@ -428,9 +442,20 @@ local function executeTask(taskId, programName, parameters)
     end
 end
 
--- Task execution function
-local function executeTaskSafely(taskId, programName, parameters)
-    -- Add to active tasks
+-- Execute a single task completely (synchronous)
+local function processTask(task)
+    if not task or not task.id or not task.program then
+        print("ERROR: Invalid task to process")
+        return false
+    end
+    
+    local taskId = tostring(task.id)
+    local programName = task.program
+    local parameters = task.parameters or {}
+    
+    print("Processing task: " .. taskId .. " (" .. programName .. ")")
+    
+    -- Mark task as active
     activeTasks[taskId] = {
         id = taskId,
         program = programName,
@@ -440,18 +465,17 @@ local function executeTaskSafely(taskId, programName, parameters)
     
     local success = false
     
-    -- Wrap task execution in additional error handling
+    -- Execute the task with full error handling
     local taskSuccess, taskResult = pcall(function()
         return executeTask(taskId, programName, parameters)
     end)
     
     if taskSuccess then
-        success = taskResult -- taskResult is the actual return value when pcall succeeds
+        success = taskResult
     else
-        -- Handle unexpected errors during task execution
         print("CRITICAL ERROR in task " .. taskId .. ": " .. tostring(taskResult))
         
-        -- Try to report failure (with error handling)
+        -- Try to report failure
         local reportSuccess, reportError = pcall(reportTaskFailure, taskId, "Critical execution error", tostring(taskResult))
         if not reportSuccess then
             print("Failed to report critical error: " .. tostring(reportError))
@@ -463,48 +487,8 @@ local function executeTaskSafely(taskId, programName, parameters)
     -- Clean up task tracking
     activeTasks[taskId] = nil
     
-    print("Task " .. taskId .. " finished with success: " .. tostring(success))
+    print("Task " .. taskId .. " completed with success: " .. tostring(success))
     return success
-end
-
--- Background task manager that processes tasks from the queue
-local function taskManager()
-    while isRunning do
-        -- Check if we can start a new task
-        local maxConcurrentTasks = 2
-        local activeTaskCount = 0
-        for _ in pairs(activeTasks) do
-            activeTaskCount = activeTaskCount + 1
-        end
-        
-        if activeTaskCount < maxConcurrentTasks then
-            local nextTask = getNextReceivedTask()
-            if nextTask then
-                local taskId = tostring(nextTask.id)
-                local programName = nextTask.program
-                local parameters = nextTask.parameters or {}
-                
-                print("Task manager starting: " .. taskId .. " (" .. programName .. ")")
-                
-                -- Execute task safely
-                local success, result = pcall(executeTaskSafely, taskId, programName, parameters)
-                if not success then
-                    print("ERROR: Failed to execute task " .. taskId .. ": " .. tostring(result))
-                    -- Clean up
-                    if activeTasks[taskId] then
-                        activeTasks[taskId] = nil
-                    end
-                    -- Report the error
-                    pcall(reportTaskFailure, taskId, "Task manager error", tostring(result))
-                end
-            end
-        end
-        
-        -- Small delay to prevent excessive CPU usage
-        sleep(1)
-    end
-    
-    print("Task manager thread stopped")
 end
 
 -- Process new tasks from server poll
@@ -517,27 +501,38 @@ local function processServerPoll(serverResponse)
         -- Handle multiple tasks
         if serverResponse.tasks then
             for _, task in ipairs(serverResponse.tasks) do
-                addToReceivedQueue(task)
+                if addToReceivedQueue(task) then
+                    print("Received new task from server: " .. task.id .. " (" .. task.program .. ")")
+                end
             end
         elseif serverResponse.id then
             -- Single task
-            addToReceivedQueue(serverResponse)
+            if addToReceivedQueue(serverResponse) then
+                print("Received new task from server: " .. serverResponse.id .. " (" .. serverResponse.program .. ")")
+            end
         elseif serverResponse.message then
             -- No tasks available - this is normal
         end
     end
 end
 
--- Server polling loop
-local function pollingLoop()
-    print("Starting server polling loop...")
+-- Simple sequential main loop - NO MULTITHREADING
+local function mainLoop()
+    print("\n=== Task Manager Active ===")
+    print("Computer ID: " .. computerId)
+    print("Polling every 2 seconds for fast response")
+    print("Press Ctrl+T to stop")
+    print("=" .. string.rep("=", 30))
+    
+    isRunning = true
     local lastPollTime = 0
+    local lastSyncTime = 0
     
     while isRunning do
-        local currentTime = os.time()
-        
-        -- Poll server for new tasks every 5 seconds
-        if currentTime - lastPollTime >= 5 then
+        local currentTime = os.clock()
+                
+        -- 1. Poll server for new tasks every 2 seconds (faster response)
+        if currentTime - lastPollTime >= 2 then
             local success, serverResponse = pcall(pollForTasks)
             if success and serverResponse then
                 local processSuccess, processError = pcall(processServerPoll, serverResponse)
@@ -550,77 +545,52 @@ local function pollingLoop()
             lastPollTime = currentTime
         end
         
-        -- Sync queue state with server periodically (every 60 seconds)
-        local success, error = pcall(syncQueueState)
-        if not success then
-            print("ERROR: Failed to sync queue state: " .. tostring(error))
+        -- 2. Process one task if available (completely synchronous)
+        local nextTask = getNextReceivedTask()
+        if nextTask then
+            print("Found task in queue: " .. nextTask.id .. " (" .. nextTask.program .. ")")
+            local success, result = pcall(processTask, nextTask)
+            if not success then
+                print("ERROR: Failed to process task " .. tostring(nextTask.id) .. ": " .. tostring(result))
+                -- Clean up
+                if activeTasks[tostring(nextTask.id)] then
+                    activeTasks[tostring(nextTask.id)] = nil
+                end
+                -- Report the error
+                pcall(reportTaskFailure, tostring(nextTask.id), "Task processing error", tostring(result))
+            end
         end
         
-        -- Small delay to prevent excessive CPU usage
-        sleep(2)
-    end
-    
-    print("Polling loop stopped")
-end
-
--- Main control loop
-local function controlLoop()
-    print("Starting control loop...")
-    
-    while isRunning do
-        -- Check for terminate event
-        local timer = os.startTimer(5) -- Check every 5 seconds
+        -- 3. Sync queue state every 60 seconds (not critical for performance)
+        -- Wait at least 10 seconds after startup before first sync
+        if currentTime >= 10 and currentTime - lastSyncTime >= 60 then
+            local success, error = pcall(syncQueueState)
+            if not success then
+                print("ERROR: Failed to sync queue state: " .. tostring(error))
+            end
+            lastSyncTime = currentTime
+        end
+        
+        -- 4. Quick terminate check (non-blocking)
+        local timer = os.startTimer(0.1)
         local event, timerID = os.pullEvent()
         
         if event == "terminate" then
-            print("\nShutting down Task Manager...")
+            print("\nReceived terminate signal, shutting down...")
             isRunning = false
             break
-        elseif event == "timer" and timerID == timer then
-            -- Continue control loop
         end
     end
     
-    print("Control loop stopped")
-end
-
--- Main function that runs all components in parallel
-local function mainLoop()
-    print("\n=== Task Manager Active ===")
-    print("Computer ID: " .. computerId)
-    print("Starting parallel polling and task management...")
-    print("Press Ctrl+T to stop")
-    print("=" .. string.rep("=", 30))
+    -- Clean shutdown
+    print("Task Manager stopped.")
     
-    isRunning = true
-    
-    -- Run polling, task management, and control in parallel
-    parallel.waitForAny(
-        pollingLoop,    -- Polls server for new tasks
-        taskManager,    -- Processes tasks from local queue
-        controlLoop     -- Handles shutdown signals
-    )
-    
-    -- Gracefully shut down active tasks
-    if table.getn(activeTasks) > 0 then
-        print("Waiting for active tasks to complete (max 30 seconds)...")
-        local shutdownStart = os.time()
-        while table.getn(activeTasks) > 0 and (os.time() - shutdownStart) < 30 do
-            sleep(1)
-        end
-        
-        -- Force cleanup remaining tasks
-        for taskId, task in pairs(activeTasks) do
-            print("Force stopping task: " .. taskId)
-            local reportSuccess, reportError = pcall(reportTaskFailure, taskId, "Task manager shutdown", "System shutdown interrupted task")
-            if not reportSuccess then
-                print("Failed to report shutdown: " .. tostring(reportError))
-            end
-            activeTasks[taskId] = nil
-        end
+    -- Force cleanup any remaining tasks
+    for taskId, task in pairs(activeTasks) do
+        print("Cleaning up task: " .. taskId)
+        pcall(reportTaskFailure, taskId, "Task manager shutdown", "System shutdown")
+        activeTasks[taskId] = nil
     end
-    
-    print("Task Manager shutdown complete.")
 end
 
 -- Display status
@@ -630,7 +600,6 @@ local function showStatus()
     print("Authentication: " .. (authToken ~= "" and "Set" or "Not set"))
     print("Received Tasks (Queue): " .. table.getn(receivedTasks))
     print("Active Tasks: " .. table.getn(activeTasks))
-    print("Last Sync: " .. (lastSyncTime > 0 and (os.time() - lastSyncTime) .. "s ago" or "Never"))
     
     if table.getn(receivedTasks) > 0 then
         print("\nQueued Tasks:")
