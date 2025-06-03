@@ -7,10 +7,13 @@ A comprehensive task management system for ComputerCraft computers with AI chat 
 ### Task Management
 - **Distributed Task Execution**: Queue and execute tasks across multiple ComputerCraft computers
 - **Parallel Processing**: Execute multiple tasks simultaneously using ComputerCraft's parallel API
+- **Dual-Queue Architecture**: Server-side and client-side queues with automatic synchronization
+- **Queue State Synchronization**: Real-time monitoring and conflict detection between server and clients
 - **Automatic Timeout Handling**: Tasks that exceed their expected duration are automatically re-queued
 - **Priority Queue System**: Tasks can be prioritized for execution order
 - **Failure Recovery**: Failed tasks are properly logged with detailed error information
 - **Computer Registration**: Automatic computer ID assignment and tracking
+- **Concurrent Task Execution**: Support for running multiple tasks simultaneously on each computer
 
 ### AI Chat Assistant
 - **Claude AI Integration**: Powered by Anthropic's Claude AI
@@ -108,11 +111,29 @@ A comprehensive task management system for ComputerCraft computers with AI chat 
 
 ### Task Lifecycle
 
-1. **Queued** - Task is added to a computer's queue
-2. **In-Progress** - Task is being executed by a computer
-3. **Completed** - Task finished successfully
-4. **Failed** - Task encountered an error
-5. **Timeout** - Task exceeded expected duration and was re-queued
+1. **Queued** - Task is added to a computer's queue on the server
+2. **Received** - Task is received by ComputerCraft computer and added to local queue
+3. **In-Progress** - Task is being executed by a computer
+4. **Completed** - Task finished successfully
+5. **Failed** - Task encountered an error
+6. **Timeout** - Task exceeded expected duration and was re-queued
+
+### Enhanced Queue Management
+
+The system now features **dual-queue architecture**:
+
+**Server-Side Queue:**
+- Tasks are queued via API calls
+- Server tracks task status and priorities
+- Handles timeout and failure recovery
+- Provides queue state via REST endpoints
+
+**Client-Side Queue (ComputerCraft):**
+- Local queue of received tasks from server
+- Priority-based task execution
+- Concurrent task processing (up to 2 tasks simultaneously)
+- Automatic queue synchronization with server
+- Local queue state reporting
 
 ### ComputerCraft Task Manager (`task_manager.lua`)
 
@@ -147,6 +168,22 @@ A simple task that writes content to a file:
 - Filename sanitization
 - Content verification
 - Detailed success/error reporting
+
+### Queue Synchronization Task (`sync_queue.lua`)
+
+A system task that synchronizes the local queue state with the server:
+
+```lua
+-- Usage: sync_queue <auth_token> <computer_id>
+-- Example: sync_queue evanwit5 abc-123-def
+```
+
+**Features:**
+- Fetches current server queue state
+- Reports local queue status to server
+- Detects synchronization issues
+- Provides recommendations for queue management
+- Automatic conflict detection and reporting
 
 ## API Documentation
 
@@ -310,6 +347,94 @@ GET /computers
     "totalActiveTasks": 1,
     "totalQueuedTasks": 3,
     "lastUpdate": "2024-01-01T00:05:30.000Z"
+  }
+}
+```
+
+### Queue Synchronization Endpoints
+
+#### Get Received Tasks
+```http
+GET /computer/{computerId}/tasks/received
+```
+**Response:**
+```json
+{
+  "computerId": "computer-uuid",
+  "queuedTasks": [
+    {
+      "id": "task-uuid-1",
+      "program": "file_out",
+      "parameters": ["test.txt", "content"],
+      "priority": 1,
+      "expectedDuration": 30,
+      "status": "queued",
+      "createdAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "activeTasks": [
+    {
+      "id": "task-uuid-2",
+      "program": "sync_queue",
+      "parameters": ["token", "computer-id"],
+      "status": "in-progress",
+      "startedAt": "2024-01-01T00:04:30.000Z"
+    }
+  ],
+  "totalTasks": 2,
+  "lastSyncedAt": "2024-01-01T00:05:00.000Z"
+}
+```
+
+#### Sync Queue State
+```http
+POST /computer/{computerId}/tasks/received
+Content-Type: application/json
+
+{
+  "queuedTasks": [
+    {
+      "id": "task-uuid-1",
+      "program": "file_out",
+      "status": "received"
+    }
+  ],
+  "activeTasks": [
+    {
+      "id": "task-uuid-2", 
+      "program": "sync_queue",
+      "status": "in-progress"
+    }
+  ],
+  "localQueueState": {
+    "queueLength": 1,
+    "activeCount": 1,
+    "syncTime": 1704067200
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "syncStatus": "in-sync",
+  "receivedAt": "2024-01-01T00:05:00.000Z",
+  "analysis": {
+    "queuedTasks": {
+      "reportedCount": 1,
+      "serverCount": 1,
+      "missingOnClient": [],
+      "extraOnClient": []
+    },
+    "activeTasks": {
+      "reportedCount": 1,
+      "serverCount": 1,
+      "missingOnClient": [],
+      "extraOnClient": []
+    }
+  },
+  "recommendations": {
+    "message": "Queue state is synchronized."
   }
 }
 ```

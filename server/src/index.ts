@@ -497,6 +497,139 @@ app.get('/computers', authenticate, (req, res): void => {
   });
 });
 
+// Get tasks received by computer
+app.get('/computer/:computerId/tasks/received', authenticate, (req, res): void => {
+  const { computerId } = req.params;
+  
+  if (!computerId) {
+    res.status(400).json({ error: 'Computer ID is required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  // Update last seen
+  computer.lastSeen = new Date();
+  
+  // Get all tasks (queued and active) that the computer should have
+  const queuedTasks = computer.taskQueue.map(task => ({
+    id: task.id,
+    program: task.program,
+    parameters: task.parameters,
+    priority: task.priority,
+    expectedDuration: task.expectedDuration,
+    status: task.status,
+    createdAt: task.createdAt.toISOString()
+  }));
+  
+  const activeTasks = Array.from(computer.activeTasks.values()).map(task => ({
+    id: task.id,
+    program: task.program,
+    parameters: task.parameters,
+    priority: task.priority,
+    expectedDuration: task.expectedDuration,
+    status: task.status,
+    createdAt: task.createdAt.toISOString(),
+    startedAt: task.startedAt?.toISOString()
+  }));
+  
+  res.json({
+    computerId,
+    queuedTasks,
+    activeTasks,
+    totalTasks: queuedTasks.length + activeTasks.length,
+    lastSyncedAt: new Date().toISOString()
+  });
+});
+
+// Sync tasks received by computer (computer reports its current queue state)
+app.post('/computer/:computerId/tasks/received', authenticate, (req, res): void => {
+  const { computerId } = req.params;
+  const { queuedTasks, activeTasks, localQueueState } = req.body;
+  
+  if (!computerId) {
+    res.status(400).json({ error: 'Computer ID is required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  // Update last seen
+  computer.lastSeen = new Date();
+  
+  // Validate input
+  if (!Array.isArray(queuedTasks) && !Array.isArray(activeTasks)) {
+    res.status(400).json({ error: 'queuedTasks or activeTasks must be provided as arrays' });
+    return;
+  }
+  
+  const reportedQueuedTasks = queuedTasks || [];
+  const reportedActiveTasks = activeTasks || [];
+  
+  // Get current server state
+  const serverQueuedTasks = computer.taskQueue.map(t => t.id);
+  const serverActiveTasks = Array.from(computer.activeTasks.keys());
+  
+  // Analyze sync status
+  const analysis = {
+    queuedTasks: {
+      reportedCount: reportedQueuedTasks.length,
+      serverCount: serverQueuedTasks.length,
+      reportedIds: reportedQueuedTasks.map((t: any) => t.id || t).filter(Boolean),
+      serverIds: serverQueuedTasks,
+      missingOnClient: serverQueuedTasks.filter(id => 
+        !reportedQueuedTasks.some((t: any) => (t.id || t) === id)
+      ),
+      extraOnClient: reportedQueuedTasks
+        .map((t: any) => t.id || t)
+        .filter((id: string) => id && !serverQueuedTasks.includes(id))
+    },
+    activeTasks: {
+      reportedCount: reportedActiveTasks.length,
+      serverCount: serverActiveTasks.length,
+      reportedIds: reportedActiveTasks.map((t: any) => t.id || t).filter(Boolean),
+      serverIds: serverActiveTasks,
+      missingOnClient: serverActiveTasks.filter(id => 
+        !reportedActiveTasks.some((t: any) => (t.id || t) === id)
+      ),
+      extraOnClient: reportedActiveTasks
+        .map((t: any) => t.id || t)
+        .filter((id: string) => id && !serverActiveTasks.includes(id))
+    }
+  };
+  
+  const syncIssues = analysis.queuedTasks.missingOnClient.length > 0 ||
+                    analysis.queuedTasks.extraOnClient.length > 0 ||
+                    analysis.activeTasks.missingOnClient.length > 0 ||
+                    analysis.activeTasks.extraOnClient.length > 0;
+  
+  console.log(`Task sync report from computer ${computerId}: ${syncIssues ? 'ISSUES DETECTED' : 'IN SYNC'}`);
+  if (syncIssues) {
+    console.log('Sync analysis:', JSON.stringify(analysis, null, 2));
+  }
+  
+  res.json({
+    syncStatus: syncIssues ? 'out-of-sync' : 'in-sync',
+    receivedAt: new Date().toISOString(),
+    analysis,
+    recommendations: syncIssues ? {
+      shouldRefreshQueue: analysis.queuedTasks.missingOnClient.length > 0,
+      shouldReportMissingTasks: analysis.activeTasks.extraOnClient.length > 0,
+      message: 'Queue state mismatch detected. Computer should poll for latest tasks.'
+    } : {
+      message: 'Queue state is synchronized.'
+    }
+  });
+});
+
 // Get conversation history for a user
 app.get('/chat/:user/history', authenticate, (req, res): void => {
   const { user } = req.params;
@@ -656,6 +789,8 @@ app.listen(PORT, () => {
   console.log(`Queue new task: POST http://localhost:${PORT}/computer/:computerId/queue`);
   console.log(`Get computer status: GET http://localhost:${PORT}/computer/:computerId/status`);
   console.log(`Get all computers: GET http://localhost:${PORT}/computers`);
+  console.log(`Get received tasks: GET http://localhost:${PORT}/computer/:computerId/tasks/received`);
+  console.log(`Sync queue state: POST http://localhost:${PORT}/computer/:computerId/tasks/received`);
   
   // Validate required environment variables
   if (!process.env.CLAUDE_API_KEY) {

@@ -11,6 +11,8 @@ local computerId = ""
 local isRunning = false
 local activeTasks = {}
 local taskThreads = {}
+local receivedTasks = {}  -- Local queue of received tasks
+local lastSyncTime = 0
 
 -- Simple JSON encoder/decoder (reused from other scripts)
 local json = {}
@@ -186,6 +188,109 @@ local function pollForTasks()
     return nil
 end
 
+-- Add task to local received queue
+local function addToReceivedQueue(task)
+    if not task or not task.id then
+        return false
+    end
+    
+    -- Check if task already exists in received queue
+    for _, existingTask in ipairs(receivedTasks) do
+        if existingTask.id == task.id then
+            return false -- Already exists
+        end
+    end
+    
+    -- Add to received tasks queue
+    table.insert(receivedTasks, {
+        id = task.id,
+        program = task.program,
+        parameters = task.parameters,
+        priority = task.priority or 0,
+        expectedDuration = task.expectedDuration,
+        receivedAt = os.time(),
+        status = "received"
+    })
+    
+    print("Added task " .. task.id .. " to local queue")
+    return true
+end
+
+-- Get next task from local received queue
+local function getNextReceivedTask()
+    if table.getn(receivedTasks) == 0 then
+        return nil
+    end
+    
+    -- Sort by priority (higher first) then by received time
+    table.sort(receivedTasks, function(a, b)
+        if a.priority ~= b.priority then
+            return a.priority > b.priority
+        end
+        return a.receivedAt < b.receivedAt
+    end)
+    
+    -- Remove and return first task
+    local task = receivedTasks[1]
+    table.remove(receivedTasks, 1)
+    return task
+end
+
+-- Sync local queue state with server
+local function syncQueueState()
+    local currentTime = os.time()
+    
+    -- Only sync every 30 seconds to avoid spam
+    if currentTime - lastSyncTime < 30 then
+        return
+    end
+    
+    lastSyncTime = currentTime
+    
+    -- Prepare queue state report
+    local queuedTasks = {}
+    for _, task in ipairs(receivedTasks) do
+        table.insert(queuedTasks, {
+            id = task.id,
+            program = task.program,
+            status = task.status,
+            receivedAt = task.receivedAt
+        })
+    end
+    
+    local activeTasks = {}
+    for taskId, task in pairs(activeTasks) do
+        table.insert(activeTasks, {
+            id = taskId,
+            program = task.program,
+            status = "in-progress",
+            startTime = task.startTime
+        })
+    end
+    
+    local response = makeRequest("POST", "/computer/" .. computerId .. "/tasks/received", {
+        queuedTasks = queuedTasks,
+        activeTasks = activeTasks,
+        localQueueState = {
+            queueLength = table.getn(receivedTasks),
+            activeCount = table.getn(activeTasks),
+            lastSyncTime = currentTime
+        }
+    })
+    
+    if response and response.success then
+        print("Queue state synced with server")
+        if response.data and response.data.syncStatus == "out-of-sync" then
+            print("WARNING: Queue out of sync with server")
+            if response.data.recommendations and response.data.recommendations.shouldRefreshQueue then
+                print("Server recommends refreshing queue")
+            end
+        end
+    else
+        print("Failed to sync queue state with server")
+    end
+end
+
 -- Report task start
 local function reportTaskStart(taskId)
     local response = makeRequest("POST", "/computer/" .. computerId .. "/start/" .. taskId, {})
@@ -305,10 +410,10 @@ local function taskThread(taskId, programName, parameters)
     return success
 end
 
--- Process a task from the server
-local function processTask(task)
+-- Process a task from the local received queue
+local function processReceivedTask(task)
     if not task or not task.id or not task.program then
-        print("Invalid task received")
+        print("Invalid task to process")
         return
     end
     
@@ -316,7 +421,7 @@ local function processTask(task)
     local programName = task.program
     local parameters = task.parameters or {}
     
-    print("Processing task: " .. taskId .. " (" .. programName .. ")")
+    print("Processing received task: " .. taskId .. " (" .. programName .. ")")
     
     -- Start task in parallel thread
     local thread = function()
@@ -331,44 +436,77 @@ local function processTask(task)
     taskThreads[taskId] = nil
 end
 
+-- Process new tasks from server poll
+local function processServerPoll(serverResponse)
+    if not serverResponse then
+        return
+    end
+    
+    if type(serverResponse) == "table" then
+        -- Handle multiple tasks
+        if serverResponse.tasks then
+            for _, task in ipairs(serverResponse.tasks) do
+                addToReceivedQueue(task)
+            end
+        elseif serverResponse.id then
+            -- Single task
+            addToReceivedQueue(serverResponse)
+        elseif serverResponse.message then
+            -- No tasks available - this is normal
+        end
+    end
+end
+
 -- Main polling loop
 local function mainLoop()
     print("\n=== Task Manager Active ===")
     print("Computer ID: " .. computerId)
-    print("Polling for tasks...")
+    print("Polling for tasks and managing local queue...")
     print("Press Ctrl+T to stop")
     print("=" .. string.rep("=", 30))
     
     isRunning = true
     
     while isRunning do
-        -- Poll for tasks
-        local tasks = pollForTasks()
+        -- Poll server for new tasks
+        local serverResponse = pollForTasks()
+        if serverResponse then
+            processServerPoll(serverResponse)
+        end
         
-        if tasks then
-            if type(tasks) == "table" then
-                -- Handle multiple tasks
-                if tasks.tasks then
-                    for _, task in ipairs(tasks.tasks) do
-                        processTask(task)
-                    end
-                elseif tasks.id then
-                    -- Single task
-                    processTask(tasks)
+        -- Start a task from local queue if we have room and tasks available
+        local maxConcurrentTasks = 2 -- Limit concurrent tasks
+        if table.getn(activeTasks) < maxConcurrentTasks then
+            local nextTask = getNextReceivedTask()
+            if nextTask then
+                print("Starting task from queue: " .. nextTask.id .. " (" .. nextTask.program .. ")")
+                
+                -- Process the task asynchronously
+                local thread = function()
+                    processReceivedTask(nextTask)
                 end
+                
+                -- Start in background using parallel
+                parallel.waitForAny(thread, function()
+                    -- This function will keep the loop responsive
+                    sleep(0.1)
+                end)
             end
         end
         
-        -- Check for terminate event
-        local timer = os.startTimer(5) -- Poll every 5 seconds
-        local event = os.pullEvent()
+        -- Sync queue state with server periodically
+        syncQueueState()
+        
+        -- Check for terminate event with timeout
+        local timer = os.startTimer(3) -- Check every 3 seconds
+        local event, timerID = os.pullEvent()
         
         if event == "terminate" then
             print("\nShutting down Task Manager...")
             isRunning = false
             break
-        elseif event == "timer" then
-            -- Continue polling
+        elseif event == "timer" and timerID == timer then
+            -- Continue main loop
         end
     end
     
@@ -386,7 +524,16 @@ local function showStatus()
     print("\n=== Task Manager Status ===")
     print("Computer ID: " .. (computerId ~= "" and computerId or "Not registered"))
     print("Authentication: " .. (authToken ~= "" and "Set" or "Not set"))
+    print("Received Tasks (Queue): " .. table.getn(receivedTasks))
     print("Active Tasks: " .. table.getn(activeTasks))
+    print("Last Sync: " .. (lastSyncTime > 0 and (os.time() - lastSyncTime) .. "s ago" or "Never"))
+    
+    if table.getn(receivedTasks) > 0 then
+        print("\nQueued Tasks:")
+        for i, task in ipairs(receivedTasks) do
+            print("  " .. i .. ". " .. task.id .. ": " .. task.program .. " (priority: " .. task.priority .. ")")
+        end
+    end
     
     if table.getn(activeTasks) > 0 then
         print("\nActive Tasks:")
