@@ -1,64 +1,173 @@
-# TypeScript Server
+# Claude API Wrapper Server
 
-A TypeScript Node.js server project.
+A TypeScript Express server that provides a simple wrapper around Anthropic's Claude API with Bearer token authentication.
+
+## Features
+
+- RESTful `/chat` endpoint for Claude API interaction
+- Bearer token authentication using a shared secret
+- CORS support for cross-origin requests
+- Health check endpoint
+- Docker support
+- TypeScript with proper error handling
 
 ## Getting Started
 
+### Prerequisites
+
+- Node.js 18+ 
+- npm or yarn
+- Claude API key from Anthropic
+
 ### Installation
 
-```bash
-npm install
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Set up environment variables:
+   ```bash
+   cp env.example .env
+   ```
+   
+   Edit `.env` and add your actual values:
+   ```
+   CLAUDE_API_KEY=sk-ant-api03-your-actual-api-key
+   AUTH_SECRET=your-secure-secret
+   PORT=3000
+   ```
+
+3. Build the project:
+   ```bash
+   npm run build
+   ```
+
+4. Start the server:
+   ```bash
+   npm start
+   ```
+
+   For development with hot reload:
+   ```bash
+   npm run dev
+   ```
+
+## API Usage
+
+### Authentication
+
+All requests to `/chat` require authentication via the `Authorization` header:
+
+```
+Authorization: Bearer your-secret-here
 ```
 
-### Development
+### Endpoints
 
-Run the development server with hot reloading:
+#### Health Check
+```
+GET /health
+```
+Returns server status and timestamp.
 
-```bash
-npm run dev
+#### Chat with Claude
+```
+POST /chat
+Content-Type: application/json
+Authorization: Bearer your-secret-here
+
+{
+  "message": "Hello, Claude!",
+  "model": "claude-3-sonnet-20240229",
+  "max_tokens": 1000
+}
 ```
 
-### Building
+**Parameters:**
+- `message` (required): The message to send to Claude
+- `model` (optional): Claude model to use (defaults to claude-3-sonnet-20240229)
+- `max_tokens` (optional): Maximum tokens in response (defaults to 1000)
 
-Compile TypeScript to JavaScript:
-
-```bash
-npm run build
+**Response:**
+```json
+{
+  "response": "Hello! How can I help you today?",
+  "model": "claude-3-sonnet-20240229",
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 8
+  }
+}
 ```
 
-### Production
-
-Start the compiled server:
+### Example with curl
 
 ```bash
-npm start
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-here" \
+  -d '{"message": "What is the capital of France?"}'
 ```
 
-### Scripts
+## Docker
 
-- `npm run dev` - Start development server with hot reloading
-- `npm run build` - Compile TypeScript to JavaScript
-- `npm run start` - Start the compiled server
-- `npm run clean` - Remove the dist directory
-- `npm test` - Run tests (not configured yet)
+### Build and run with Docker
+
+```bash
+# Build the image
+docker build -t claude-api-wrapper .
+
+# Run the container
+docker run -p 3000:3000 --env-file .env claude-api-wrapper
+```
+
+### Using environment variables with Docker
+
+```bash
+docker run -p 3000:3000 \
+  -e CLAUDE_API_KEY=your-api-key \
+  -e AUTH_SECRET=your-secret \
+  claude-api-wrapper
+```
+
+## Scripts
+
+- `npm run build` - Build the TypeScript project
+- `npm run start` - Start the production server
+- `npm run dev` - Start the development server with hot reload
+- `npm run clean` - Clean the build output
 
 ## Project Structure
 
 ```
-server/
-├── src/           # TypeScript source files
-│   └── index.ts   # Main entry point
-├── dist/          # Compiled JavaScript (generated)
-├── package.json   # Project dependencies and scripts
-├── tsconfig.json  # TypeScript configuration
-└── README.md      # This file
+src/
+  index.ts      # Main server with Express app and Claude API integration
+dist/           # Built output (generated)
+Dockerfile      # Docker configuration
+env.example     # Environment variables template
 ```
 
-## TypeScript Configuration
+## Error Handling
 
-The project uses a strict TypeScript configuration with:
-- ES2020 target
-- CommonJS modules
-- Strict type checking
-- Source maps for debugging
-- Declaration files generation 
+The API returns appropriate HTTP status codes:
+
+- `200` - Success
+- `400` - Bad request (missing or invalid message)
+- `401` - Unauthorized (missing or invalid authentication)
+- `500` - Server error (Claude API errors or internal errors)
+
+## Security
+
+- Bearer token authentication using a shared secret
+- Non-root user in Docker container
+- CORS enabled for cross-origin requests
+- Input validation for required fields
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `CLAUDE_API_KEY` | Yes | Your Anthropic Claude API key |
+| `AUTH_SECRET` | Yes | Secret for basic authentication |
+| `PORT` | No | Server port (default: 3000) 

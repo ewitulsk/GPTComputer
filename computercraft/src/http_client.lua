@@ -89,23 +89,32 @@ function HttpClient:_makeRequest(method, url, body, headers)
         end
     end
     
-    -- Prepare request options
-    local options = {
-        url = full_url,
-        method = method,
-        headers = request_headers
-    }
-    
-    if body then
-        options.body = body
-    end
-    
     print("Making " .. method .. " request to: " .. full_url)
     
-    -- Make the HTTP request
-    local response = http.request(options)
+    -- Make the HTTP request using ComputerCraft's API
+    local response
     
-    if response then
+    if method == "GET" then
+        response = http.get(full_url, request_headers)
+    elseif method == "POST" then
+        response = http.post(full_url, body or "", request_headers)
+    else
+        -- For PUT, DELETE, etc. use the request method
+        local options = {
+            url = full_url,
+            method = method,
+            headers = request_headers
+        }
+        
+        if body then
+            options.body = body
+        end
+        
+        response = http.request(options)
+    end
+    
+    -- Check if response is valid (not false/nil)
+    if response and type(response) == "table" and response.getResponseCode then
         local status = response.getResponseCode()
         local responseBody = response.readAll()
         response.close()
@@ -119,12 +128,12 @@ function HttpClient:_makeRequest(method, url, body, headers)
             success = status >= 200 and status < 300
         }
     else
-        print("HTTP request failed")
+        print("HTTP request failed - no response received")
         return {
             status = 0,
             body = nil,
             success = false,
-            error = "Request failed"
+            error = "Request failed - connection error or invalid URL"
         }
     end
 end
@@ -326,8 +335,18 @@ local function main()
     end
 end
 
--- Export functions for use as API
-return {
+-- Check if this file is being loaded as a module or run directly
+-- In ComputerCraft, we'll just run main by default
+local isModule = false
+
+-- Try to detect if we're being required (this is a simple heuristic)
+if _G and _G.require then
+    -- If someone sets this flag, we won't auto-run main
+    isModule = rawget(_G, "_HTTP_CLIENT_AS_MODULE") or false
+end
+
+-- Export table for module usage
+local httpClientModule = {
     HttpClient = HttpClient,
     quickGet = quickGet,
     quickPost = quickPost,
@@ -337,7 +356,10 @@ return {
     main = main
 }
 
--- Auto-run main if executed directly
-if not ... then
+-- Run main if not being used as module
+if not isModule then
     main()
-end 
+end
+
+-- Return module for require() usage
+return httpClientModule 
