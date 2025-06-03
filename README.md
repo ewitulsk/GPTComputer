@@ -80,6 +80,23 @@ A comprehensive task management system for ComputerCraft computers with AI chat 
    chat_ai_assistant
    ```
 
+### Testing the System
+
+1. **Set up your authentication token:**
+   ```bash
+   export AUTH_TOKEN="your-auth-secret-here"
+   ```
+
+2. **Run the example usage script:**
+   ```bash
+   ./example_usage.sh <computer-id>
+   ```
+
+   Or with inline environment variable:
+   ```bash
+   AUTH_TOKEN="your-auth-secret-here" ./example_usage.sh <computer-id>
+   ```
+
 ## Task Management System
 
 ### Core Concepts
@@ -254,6 +271,46 @@ GET /computer/{computerId}/status
     }
   ],
   "queueLength": 1
+}
+```
+
+#### Get All Computers
+```http
+GET /computers
+```
+**Response:**
+```json
+{
+  "total": 3,
+  "active": 2,
+  "inactive": 1,
+  "computers": [
+    {
+      "id": "computer-uuid-1",
+      "registeredAt": "2024-01-01T00:00:00.000Z",
+      "lastSeen": "2024-01-01T00:05:00.000Z",
+      "isActive": true,
+      "activeTaskCount": 1,
+      "queueLength": 2,
+      "totalTasks": 3,
+      "lastSeenAgo": 30
+    },
+    {
+      "id": "computer-uuid-2",
+      "registeredAt": "2024-01-01T00:00:00.000Z",
+      "lastSeen": "2024-01-01T00:03:00.000Z",
+      "isActive": true,
+      "activeTaskCount": 0,
+      "queueLength": 1,
+      "totalTasks": 1,
+      "lastSeenAgo": 150
+    }
+  ],
+  "summary": {
+    "totalActiveTasks": 1,
+    "totalQueuedTasks": 3,
+    "lastUpdate": "2024-01-01T00:05:30.000Z"
+  }
 }
 ```
 

@@ -5,7 +5,6 @@
 
 # Configuration
 SERVER_URL="https://gptcomputer-810360555756.us-central1.run.app"
-AUTH_TOKEN="your-auth-secret-here"  # Replace with your actual auth secret
 
 # Colors for output
 RED='\033[0;31m'
@@ -30,6 +29,18 @@ print_error() {
 print_warning() {
     echo -e "${YELLOW}⚠ $1${NC}"
 }
+
+# Check if AUTH_TOKEN environment variable is set
+if [ -z "$AUTH_TOKEN" ]; then
+    print_error "AUTH_TOKEN environment variable is not set"
+    print_warning "Please set the AUTH_TOKEN environment variable before running this script:"
+    echo "  export AUTH_TOKEN=\"your-auth-secret-here\""
+    echo "  $0 <computer-id>"
+    echo ""
+    print_warning "Or run with the token inline:"
+    echo "  AUTH_TOKEN=\"your-auth-secret-here\" $0 <computer-id>"
+    exit 1
+fi
 
 # Check if computer ID is provided
 if [ -z "$1" ]; then
@@ -137,7 +148,27 @@ print_success "Active tasks: $active_tasks"
 
 echo ""
 
-# Test 5: Monitor task execution
+# Test 5: List all computers
+print_step "Getting All Computers"
+computers_response=$(curl -s \
+    -H "Authorization: Bearer $AUTH_TOKEN" \
+    "$SERVER_URL/computers")
+
+echo "$computers_response" | jq '.'
+
+total_computers=$(echo "$computers_response" | jq '.total')
+active_computers=$(echo "$computers_response" | jq '.active')
+total_active_tasks=$(echo "$computers_response" | jq '.summary.totalActiveTasks')
+total_queued_tasks=$(echo "$computers_response" | jq '.summary.totalQueuedTasks')
+
+print_success "Total computers: $total_computers"
+print_success "Active computers: $active_computers" 
+print_success "Total active tasks: $total_active_tasks"
+print_success "Total queued tasks: $total_queued_tasks"
+
+echo ""
+
+# Test 6: Monitor task execution
 print_step "Monitoring Task Execution"
 print_warning "The ComputerCraft computer should now be executing the queued tasks"
 print_warning "Check the computer's console output to see the task execution"
@@ -145,11 +176,17 @@ print_warning "You can run this script again to see the updated status"
 
 echo ""
 print_step "Manual Commands"
+echo "Note: Make sure to set AUTH_TOKEN environment variable first:"
+echo "export AUTH_TOKEN=\"your-auth-secret-here\""
+echo ""
 echo "Check computer status:"
-echo "curl -H 'Authorization: Bearer $AUTH_TOKEN' $SERVER_URL/computer/$COMPUTER_ID/status | jq '.'"
+echo "curl -H \"Authorization: Bearer \$AUTH_TOKEN\" $SERVER_URL/computer/$COMPUTER_ID/status | jq '.'"
+echo ""
+echo "Get all computers:"
+echo "curl -H \"Authorization: Bearer \$AUTH_TOKEN\" $SERVER_URL/computers | jq '.'"
 echo ""
 echo "Queue a custom task:"
-echo "curl -X POST -H 'Authorization: Bearer $AUTH_TOKEN' -H 'Content-Type: application/json' \\"
+echo "curl -X POST -H \"Authorization: Bearer \$AUTH_TOKEN\" -H 'Content-Type: application/json' \\"
 echo "  -d '{\"program\":\"your_program\",\"parameters\":[\"arg1\",\"arg2\"]}' \\"
 echo "  $SERVER_URL/computer/$COMPUTER_ID/queue"
 

@@ -456,6 +456,47 @@ app.get('/computer/:computerId/status', authenticate, (req, res): void => {
   });
 });
 
+// Get all computers
+app.get('/computers', authenticate, (req, res): void => {
+  const now = new Date();
+  const cutoffTime = new Date(now.getTime() - 60 * 60 * 1000); // 1 hour ago
+  
+  const computerList = Array.from(computers.values()).map(computer => {
+    const isActive = computer.lastSeen > cutoffTime;
+    const activeTaskCount = computer.activeTasks.size;
+    const queueLength = computer.taskQueue.length;
+    
+    return {
+      id: computer.id,
+      registeredAt: computer.registeredAt.toISOString(),
+      lastSeen: computer.lastSeen.toISOString(),
+      isActive,
+      activeTaskCount,
+      queueLength,
+      totalTasks: activeTaskCount + queueLength,
+      lastSeenAgo: Math.floor((now.getTime() - computer.lastSeen.getTime()) / 1000)
+    };
+  });
+  
+  // Sort by last seen (most recent first)
+  computerList.sort((a, b) => b.lastSeenAgo - a.lastSeenAgo);
+  
+  const activeComputers = computerList.filter(c => c.isActive);
+  const inactiveComputers = computerList.filter(c => !c.isActive);
+  
+  res.json({
+    total: computerList.length,
+    active: activeComputers.length,
+    inactive: inactiveComputers.length,
+    computers: computerList,
+    summary: {
+      totalActiveTasks: activeComputers.reduce((sum, c) => sum + c.activeTaskCount, 0),
+      totalQueuedTasks: activeComputers.reduce((sum, c) => sum + c.queueLength, 0),
+      lastUpdate: now.toISOString()
+    }
+  });
+});
+
 // Get conversation history for a user
 app.get('/chat/:user/history', authenticate, (req, res): void => {
   const { user } = req.params;
@@ -614,6 +655,7 @@ app.listen(PORT, () => {
   console.log(`Report task failure: POST http://localhost:${PORT}/computer/:computerId/failure/:taskId`);
   console.log(`Queue new task: POST http://localhost:${PORT}/computer/:computerId/queue`);
   console.log(`Get computer status: GET http://localhost:${PORT}/computer/:computerId/status`);
+  console.log(`Get all computers: GET http://localhost:${PORT}/computers`);
   
   // Validate required environment variables
   if (!process.env.CLAUDE_API_KEY) {
