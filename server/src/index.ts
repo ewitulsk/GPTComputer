@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import Anthropic from '@anthropic-ai/sdk';
+import { v4 as uuidv4 } from 'uuid';
 
 // Load environment variables
 dotenv.config();
@@ -27,6 +28,37 @@ interface UserSession {
 
 const userSessions = new Map<string, UserSession>();
 
+// Task Management System
+interface Task {
+  id: string;
+  program: string;
+  parameters: string[];
+  expectedDuration?: number; // in seconds
+  priority?: number;
+  createdAt: Date;
+  status: 'queued' | 'in-progress' | 'completed' | 'failed' | 'timeout';
+  computerId?: string;
+  startedAt?: Date;
+  finishedAt?: Date;
+  output?: string;
+  error?: string;
+  details?: string;
+}
+
+interface Computer {
+  id: string;
+  registeredAt: Date;
+  lastSeen: Date;
+  taskQueue: Task[];
+  activeTasks: Map<string, Task>;
+}
+
+const computers = new Map<string, Computer>();
+const allTasks = new Map<string, Task>();
+
+// Task timeout in seconds (default 5 minutes)
+const DEFAULT_TASK_TIMEOUT = 300;
+
 // Clean up old sessions (older than 24 hours)
 const cleanupOldSessions = (): void => {
   const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
@@ -37,8 +69,90 @@ const cleanupOldSessions = (): void => {
   }
 };
 
-// Run cleanup every hour
-setInterval(cleanupOldSessions, 60 * 60 * 1000);
+// Task Management Functions
+const checkTaskTimeouts = (): void => {
+  const now = new Date();
+  
+  for (const computer of computers.values()) {
+    for (const [taskId, task] of computer.activeTasks.entries()) {
+      if (task.startedAt) {
+        const timeout = (task.expectedDuration || DEFAULT_TASK_TIMEOUT) * 1000;
+        const elapsed = now.getTime() - task.startedAt.getTime();
+        
+        if (elapsed > timeout) {
+          console.log(`Task ${taskId} timed out on computer ${computer.id}`);
+          
+          // Mark task as timed out
+          task.status = 'timeout';
+          task.finishedAt = now;
+          task.error = 'Task execution timeout';
+          task.details = `Task exceeded expected duration of ${task.expectedDuration || DEFAULT_TASK_TIMEOUT} seconds`;
+          
+          // Remove from active tasks
+          computer.activeTasks.delete(taskId);
+          
+          // Re-queue the task with higher priority
+          const requeuedTask: Task = {
+            id: uuidv4(),
+            program: task.program,
+            parameters: task.parameters,
+            status: 'queued',
+            priority: (task.priority || 0) + 1,
+            createdAt: now,
+            ...(task.expectedDuration && { expectedDuration: task.expectedDuration })
+          };
+          
+          computer.taskQueue.unshift(requeuedTask); // Add to front of queue
+          allTasks.set(requeuedTask.id, requeuedTask);
+        }
+      }
+    }
+  }
+};
+
+const cleanupOldComputers = (): void => {
+  const cutoffTime = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
+  
+  for (const [computerId, computer] of computers.entries()) {
+    if (computer.lastSeen < cutoffTime) {
+      console.log(`Removing inactive computer: ${computerId}`);
+      
+      // Re-queue any active tasks
+      for (const task of computer.activeTasks.values()) {
+        task.status = 'queued';
+        delete task.startedAt;
+        delete task.computerId;
+        
+        // Add back to a general queue or specific computer queue
+        // For now, we'll just mark them as available
+        allTasks.set(task.id, task);
+      }
+      
+      computers.delete(computerId);
+    }
+  }
+};
+
+const getNextTaskForComputer = (computerId: string): Task | null => {
+  const computer = computers.get(computerId);
+  if (!computer) return null;
+  
+  // Sort tasks by priority (higher first) then by creation time
+  computer.taskQueue.sort((a, b) => {
+    const priorityDiff = (b.priority || 0) - (a.priority || 0);
+    if (priorityDiff !== 0) return priorityDiff;
+    return a.createdAt.getTime() - b.createdAt.getTime();
+  });
+  
+  return computer.taskQueue.shift() || null;
+};
+
+// Run cleanup functions every minute
+setInterval(() => {
+  cleanupOldSessions();
+  checkTaskTimeouts();
+  cleanupOldComputers();
+}, 60 * 1000);
 
 // Middleware
 app.use(cors());
@@ -66,6 +180,280 @@ const authenticate = (req: express.Request, res: express.Response, next: express
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
+// Computer Management Endpoints
+
+// Computer registration
+app.post('/computer/hello', authenticate, (req, res): void => {
+  const computerId = uuidv4();
+  const now = new Date();
+  
+  const computer: Computer = {
+    id: computerId,
+    registeredAt: now,
+    lastSeen: now,
+    taskQueue: [],
+    activeTasks: new Map()
+  };
+  
+  computers.set(computerId, computer);
+  
+  console.log(`Computer registered: ${computerId}`);
+  
+  res.json({
+    computerId,
+    registeredAt: now.toISOString(),
+    message: 'Computer registered successfully'
+  });
+});
+
+// Poll for tasks
+app.get('/computer/:computerId/poll', authenticate, (req, res): void => {
+  const { computerId } = req.params;
+  
+  if (!computerId) {
+    res.status(400).json({ error: 'Computer ID is required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  // Update last seen
+  computer.lastSeen = new Date();
+  
+  // Get next task
+  const task = getNextTaskForComputer(computerId);
+  
+  if (task) {
+    res.json({
+      id: task.id,
+      program: task.program,
+      parameters: task.parameters,
+      expectedDuration: task.expectedDuration
+    });
+  } else {
+    res.json({ message: 'No tasks available' });
+  }
+});
+
+// Report task start
+app.post('/computer/:computerId/start/:taskId', authenticate, (req, res): void => {
+  const { computerId, taskId } = req.params;
+  
+  if (!computerId || !taskId) {
+    res.status(400).json({ error: 'Computer ID and Task ID are required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  const task = allTasks.get(taskId);
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  
+  // Update task status
+  task.status = 'in-progress';
+  task.startedAt = new Date();
+  task.computerId = computerId;
+  
+  // Add to computer's active tasks
+  computer.activeTasks.set(taskId, task);
+  computer.lastSeen = new Date();
+  
+  console.log(`Task ${taskId} started on computer ${computerId}`);
+  
+  res.json({
+    taskId,
+    status: 'started',
+    startedAt: task.startedAt.toISOString()
+  });
+});
+
+// Report task completion
+app.post('/computer/:computerId/finish/:taskId', authenticate, (req, res): void => {
+  const { computerId, taskId } = req.params;
+  const { output } = req.body;
+  
+  if (!computerId || !taskId) {
+    res.status(400).json({ error: 'Computer ID and Task ID are required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  const task = computer.activeTasks.get(taskId);
+  if (!task) {
+    res.status(404).json({ error: 'Active task not found' });
+    return;
+  }
+  
+  // Update task status
+  task.status = 'completed';
+  task.finishedAt = new Date();
+  task.output = output || '';
+  
+  // Remove from active tasks
+  computer.activeTasks.delete(taskId);
+  computer.lastSeen = new Date();
+  
+  console.log(`Task ${taskId} completed on computer ${computerId}`);
+  
+  res.json({
+    taskId,
+    status: 'completed',
+    finishedAt: task.finishedAt.toISOString(),
+    duration: task.startedAt ? 
+      (task.finishedAt.getTime() - task.startedAt.getTime()) / 1000 : 0
+  });
+});
+
+// Report task failure
+app.post('/computer/:computerId/failure/:taskId', authenticate, (req, res): void => {
+  const { computerId, taskId } = req.params;
+  const { error, details, timestamp } = req.body;
+  
+  if (!computerId || !taskId) {
+    res.status(400).json({ error: 'Computer ID and Task ID are required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  const task = computer.activeTasks.get(taskId);
+  if (!task) {
+    res.status(404).json({ error: 'Active task not found' });
+    return;
+  }
+  
+  // Update task status
+  task.status = 'failed';
+  task.finishedAt = new Date();
+  task.error = error || 'Unknown error';
+  task.details = details || '';
+  
+  // Remove from active tasks
+  computer.activeTasks.delete(taskId);
+  computer.lastSeen = new Date();
+  
+  console.log(`Task ${taskId} failed on computer ${computerId}: ${task.error}`);
+  
+  res.json({
+    taskId,
+    status: 'failed',
+    error: task.error,
+    details: task.details,
+    finishedAt: task.finishedAt.toISOString()
+  });
+});
+
+// Queue a new task
+app.post('/computer/:computerId/queue', authenticate, (req, res): void => {
+  const { computerId } = req.params;
+  const { program, parameters, expectedDuration, priority } = req.body;
+  
+  if (!computerId) {
+    res.status(400).json({ error: 'Computer ID is required' });
+    return;
+  }
+  
+  if (!program) {
+    res.status(400).json({ error: 'Program name is required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  const taskId = uuidv4();
+  const task: Task = {
+    id: taskId,
+    program: program,
+    parameters: parameters || [],
+    expectedDuration: expectedDuration || DEFAULT_TASK_TIMEOUT,
+    priority: priority || 0,
+    createdAt: new Date(),
+    status: 'queued'
+  };
+  
+  // Add to computer's task queue
+  computer.taskQueue.push(task);
+  allTasks.set(taskId, task);
+  
+  console.log(`Task ${taskId} queued for computer ${computerId}: ${program}`);
+  
+  res.json({
+    taskId,
+    status: 'queued',
+    program,
+    parameters: task.parameters,
+    expectedDuration: task.expectedDuration,
+    priority: task.priority,
+    queuePosition: computer.taskQueue.length,
+    createdAt: task.createdAt.toISOString()
+  });
+});
+
+// Get computer status and queue
+app.get('/computer/:computerId/status', authenticate, (req, res): void => {
+  const { computerId } = req.params;
+  
+  if (!computerId) {
+    res.status(400).json({ error: 'Computer ID is required' });
+    return;
+  }
+  
+  const computer = computers.get(computerId);
+  if (!computer) {
+    res.status(404).json({ error: 'Computer not found' });
+    return;
+  }
+  
+  const activeTasks = Array.from(computer.activeTasks.values()).map(task => ({
+    id: task.id,
+    program: task.program,
+    status: task.status,
+    startedAt: task.startedAt?.toISOString(),
+    runningFor: task.startedAt ? 
+      Math.floor((new Date().getTime() - task.startedAt.getTime()) / 1000) : 0
+  }));
+  
+  const queuedTasks = computer.taskQueue.map(task => ({
+    id: task.id,
+    program: task.program,
+    priority: task.priority,
+    createdAt: task.createdAt.toISOString()
+  }));
+  
+  res.json({
+    computerId,
+    registeredAt: computer.registeredAt.toISOString(),
+    lastSeen: computer.lastSeen.toISOString(),
+    activeTasks,
+    queuedTasks,
+    queueLength: computer.taskQueue.length
+  });
 });
 
 // Get conversation history for a user
@@ -211,19 +599,32 @@ app.post('/chat', authenticate, async (req, res): Promise<void> => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Claude API wrapper server running on port ${PORT}`);
+  console.log(`Task Management & Claude API Server running on port ${PORT}`);
+  console.log('\n=== Health & Chat Endpoints ===');
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Chat endpoint: POST http://localhost:${PORT}/chat`);
   console.log(`Get history: GET http://localhost:${PORT}/chat/:user/history`);
   console.log(`Clear history: DELETE http://localhost:${PORT}/chat/:user/history`);
   
+  console.log('\n=== Task Management Endpoints ===');
+  console.log(`Computer registration: POST http://localhost:${PORT}/computer/hello`);
+  console.log(`Poll for tasks: GET http://localhost:${PORT}/computer/:computerId/poll`);
+  console.log(`Report task start: POST http://localhost:${PORT}/computer/:computerId/start/:taskId`);
+  console.log(`Report task completion: POST http://localhost:${PORT}/computer/:computerId/finish/:taskId`);
+  console.log(`Report task failure: POST http://localhost:${PORT}/computer/:computerId/failure/:taskId`);
+  console.log(`Queue new task: POST http://localhost:${PORT}/computer/:computerId/queue`);
+  console.log(`Get computer status: GET http://localhost:${PORT}/computer/:computerId/status`);
+  
   // Validate required environment variables
   if (!process.env.CLAUDE_API_KEY) {
-    console.warn('Warning: CLAUDE_API_KEY environment variable not set');
+    console.warn('\nWarning: CLAUDE_API_KEY environment variable not set');
   }
   if (!process.env.AUTH_SECRET) {
     console.warn('Warning: AUTH_SECRET environment variable not set');
   }
+  
+  console.log('\n=== Task Management System Active ===');
+  console.log('Monitoring for task timeouts and computer activity...');
 });
 
 export default app; 

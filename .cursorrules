@@ -1,0 +1,143 @@
+# Project Tech Stack and Rules
+
+## Tech Stack
+- **ComputerCraft**: CC: Tweaked (Lua 5.0)
+- **Minecraft Mod**: Advanced Peripherals
+- **Server**: Express.js with TypeScript
+- **API**: Anthropic Claude SDK
+- **Environment**: Minecraft mod environment with HTTP capabilities
+
+## Lua/ComputerCraft Specific Rules
+
+### Lua Version Constraints
+- Use **Lua 5.0 syntax only** - no modern Lua features
+- No `goto` statements, `#` length operator, or table.pack/unpack
+- Use `table.getn()` instead of `#` for table length
+- String patterns only, no full regex support
+- Limited standard library compared to modern Lua
+
+### ComputerCraft APIs
+- Use `peripheral.find()` and `peripheral.wrap()` for hardware
+- HTTP requests via `http.get()`, `http.post()`, `http.request()`
+- File operations via `fs` API
+- Use `os.pullEvent()` for event handling
+- `sleep()` for delays, `os.startTimer()` for timers
+- `term` API for terminal output, `redstone` for redstone control
+
+### Advanced Peripherals Integration
+- Chat Box: `chatBox.sendMessage()`, listen for "chat" events
+- Energy Detector, Player Detector, etc. via peripheral API
+- Always check peripheral availability with error handling
+- Use proper peripheral names and methods as per AP documentation
+
+### ComputerCraft Best Practices
+- Always handle peripheral disconnection gracefully
+- Use event-driven programming with `os.pullEvent()`
+- Implement proper error handling for HTTP requests
+- Respect chat cooldowns and message limits
+- Split long messages into chunks for chat display
+- Use `textutils.serialiseJSON()` and `textutils.unserialiseJSON()` when available
+- Implement custom JSON encoding/decoding as fallback
+
+### Lua Code Style
+- Use descriptive variable names in camelCase
+- Functions in camelCase, constants in UPPER_CASE
+- Always validate inputs and handle errors
+- Use local variables when possible
+- Comment complex logic and API interactions
+- Structure code with clear separation of concerns
+
+## TypeScript/Express Server Rules
+
+### Server Architecture
+- Use Express.js with proper middleware
+- Implement authentication via Bearer tokens
+- Use CORS for cross-origin requests
+- Structure routes logically with proper error handling
+- Use environment variables for configuration
+
+### API Design
+- RESTful endpoints with proper HTTP status codes
+- JSON request/response format
+- Consistent error response structure
+- Include proper request validation
+- Support conversation context per user
+
+### TypeScript Best Practices
+- Use proper type definitions
+- Interface definitions for request/response objects
+- Proper error handling with typed exceptions
+- Use async/await for asynchronous operations
+- Proper middleware typing
+
+### Security
+- Validate all inputs
+- Use authentication middleware
+- Don't expose sensitive information in errors
+- Rate limiting considerations
+- Proper CORS configuration
+
+## Project Structure
+
+### ComputerCraft Scripts (`/computercraft/src/`)
+- Self-contained Lua scripts for specific functions
+- HTTP client utilities and chat assistants
+- Proper error handling and user feedback
+- Event-driven architecture
+
+### Server (`/server/src/`)
+- Express application with TypeScript
+- API endpoints for ComputerCraft integration
+- Claude API integration
+- Session management and conversation history
+
+## Integration Patterns
+
+### ComputerCraft to Server Communication
+- HTTP POST requests with JSON payloads
+- Bearer token authentication
+- Proper error handling and retry logic
+- User context preservation
+
+### API Response Handling
+- Parse JSON responses safely
+- Handle various HTTP status codes
+- Provide user-friendly error messages
+- Implement fallback mechanisms
+
+## Error Handling
+
+### ComputerCraft
+- Always check if peripherals are connected
+- Handle HTTP request failures gracefully
+- Provide clear user feedback for all error states
+- Use pcall() for protected calls when appropriate
+
+### Server
+- Proper HTTP status codes for different error types
+- Structured error responses
+- Logging of errors for debugging
+- Graceful degradation of services
+
+## Code Comments and Documentation
+
+### ComputerCraft
+- Comment peripheral requirements and setup
+- Document event handling and API interactions
+- Explain complex logic and workarounds for Lua 5.0 limitations
+- Include usage instructions in script headers
+
+### Server
+- Document API endpoints with expected request/response formats
+- Comment complex business logic
+- Include environment variable requirements
+- Document authentication and authorization patterns
+
+## When suggesting code changes:
+1. Always consider Lua 5.0 limitations for ComputerCraft code
+2. Test peripheral availability before use
+3. Implement proper error handling for all HTTP operations
+4. Follow established patterns for API integration
+5. Maintain conversation context in server responses
+6. Use appropriate chat formatting and message splitting
+7. Consider Minecraft server performance and chat spam prevention 

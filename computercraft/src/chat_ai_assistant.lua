@@ -92,21 +92,15 @@ local function getAuthToken()
 end
 
 -- Make API call to Claude service
-local function callClaudeAPI(message)
+local function callClaudeAPI(message, username)
     local url = API_BASE_URL .. CHAT_ENDPOINT
     local headers = {
         ["Authorization"] = "Bearer " .. authToken,
         ["Content-Type"] = "application/json"
     }
     
-    -- Generate unique user ID for this computer/turtle
-    local computerLabel = os.getComputerLabel()
-    local userID
-    if computerLabel then
-        userID = "cc_" .. os.getComputerID() .. "_" .. computerLabel
-    else
-        userID = "cc_" .. os.getComputerID()
-    end
+    -- Use the Minecraft username as the user ID for conversation context
+    local userID = username or "unknown_user"
     
     local requestBody = json.encode({
         user = userID,
@@ -228,8 +222,8 @@ local function processChatMessage(username, message, uuid, isHidden)
     
     print("Processing message from " .. username .. ": " .. trimmedMessage)
     
-    -- Call Claude API with the full message
-    local success, response = callClaudeAPI(trimmedMessage)
+    -- Call Claude API with the full message and username for context
+    local success, response = callClaudeAPI(trimmedMessage, username)
     
     if success then
         print("Claude API response received")
@@ -266,7 +260,7 @@ end
 -- Test API connection
 local function testAPIConnection()
     print("\nTesting API connection...")
-    local success, response = callClaudeAPI("Hello, this is a test message. Please respond with 'API test successful'.")
+    local success, response = callClaudeAPI("Hello, this is a test message. Please respond with 'API test successful'.", "test_user")
     
     if success then
         print("API test successful!")
